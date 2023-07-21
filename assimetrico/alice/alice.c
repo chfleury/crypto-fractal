@@ -100,7 +100,10 @@ void encryptImageWithRSA(const unsigned char *plain_text, int plain_text_len, co
     int result = RSA_public_encrypt(plain_text_len, plain_text, encrypted_text, rsa, RSA_PKCS1_PADDING);
     if (result == -1)
     {
-        printf("Erro ao criptografar o texto\n");
+        unsigned long err = ERR_get_error();
+        char err_msg[256];
+        ERR_error_string_n(err, err_msg, sizeof(err_msg));
+        printf("Erro durante a criptografia: %s\n", err_msg);
         RSA_free(rsa);
         free(encrypted_text);
         exit(1);
