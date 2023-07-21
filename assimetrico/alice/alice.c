@@ -8,218 +8,210 @@
 #include <openssl/err.h>
 #include <openssl/bn.h>
 
-#define PORT 8080
-#define BUFFER_SIZE 1024
-
-// Função para criar a chave pública RSA a partir dos dois números fornecidos
+// Função auxiliar para carregar uma chave pública RSA a partir de uma string no formato "n#e"
 RSA *createRSA(const char *n_str, const char *e_str)
 {
+    printf("n: %s\n", n_str);
+    printf("e: %s\n", e_str);
+
     RSA *rsa = RSA_new();
+    if (!rsa)
+    {
+        printf("Erro ao criar estrutura RSA\n");
+        return NULL;
+    }
+
     BIGNUM *n = BN_new();
     BIGNUM *e = BN_new();
 
-    BN_dec2bn(&n, n_str);
-    BN_dec2bn(&e, e_str);
+    if (!BN_hex2bn(&n, n_str))
+    {
+        printf("Erro ao converter 'n' para BIGNUM\n");
+        RSA_free(rsa);
+        return NULL;
+    }
 
-    RSA_set0_key(rsa, n, e, NULL);
+    if (!BN_hex2bn(&e, e_str))
+    {
+        printf("Erro ao converter 'e' para BIGNUM\n");
+        BN_free(n);
+        RSA_free(rsa);
+        return NULL;
+    }
+
+    if (!RSA_set0_key(rsa, n, e, NULL))
+    {
+        printf("Erro ao configurar os componentes da chave pública RSA\n");
+        BN_free(n);
+        BN_free(e);
+        RSA_free(rsa);
+        return NULL;
+    }
 
     return rsa;
 }
 
 // Função para criptografar a imagem com RSA usando a chave pública de Bob
-void encryptImageWithRSA(const char *publicKeyFile)
+void encryptImageWithRSA(const unsigned char *plain_text, int plain_text_len, const char *publicKeyFile)
 {
+    // Carrega a chave pública RSA de Bob a partir do arquivo "chave.pub"
     FILE *fp = fopen(publicKeyFile, "r");
     if (!fp)
     {
         perror("Erro ao abrir o arquivo da chave pública");
-        return;
+        exit(1);
     }
 
     char n_str[256];
     char e_str[256];
+
     fscanf(fp, "%[^#]#%s", n_str, e_str);
     fclose(fp);
 
-        RSA *rsa = createRSA(n_str, e_str);
-
+    RSA *rsa = createRSA(n_str, e_str);
     if (!rsa)
     {
-        return;
+        printf("Erro ao criar a chave pública RSA\n");
+        exit(1);
     }
 
-    // Abra o arquivo da imagem para leitura
-    FILE *img_fp = fopen("fractal.bmp", "rb");
-    if (!img_fp)
+    // Tamanho do bloco de criptografia (em bytes) usando a chave pública de Bob
+    int rsa_block_size = RSA_size(rsa);
+    printf("rsa_blocksize: %d\n", rsa_block_size);
+
+    // Número de blocos necessários para criptografar todo o texto
+    int num_blocks = (plain_text_len + rsa_block_size - 1) / rsa_block_size;
+    printf("num_blocks: %d\n", num_blocks);
+
+    // Tamanho total do texto criptografado (em bytes)
+    int encrypted_text_len = rsa_block_size;
+    printf("encrypted_text_len: %d\n", num_blocks);
+
+    // Aloca memória para armazenar o texto criptografado
+    unsigned char *encrypted_text = (unsigned char *)malloc(encrypted_text_len);
+    if (!encrypted_text)
     {
-        perror("Erro ao abrir a imagem fractal.bmp");
+        printf("Erro ao alocar memória para texto criptografado\n");
         RSA_free(rsa);
-        return;
+        exit(1);
     }
 
-    // Verifique o tamanho do arquivo da imagem
-    fseek(img_fp, 0, SEEK_END);
-    long fileSize = ftell(img_fp);
-    fseek(img_fp, 0, SEEK_SET);
-
-    if (fileSize == 0)
+    // Criptografa o texto
+    int result = RSA_public_encrypt(plain_text_len, plain_text, encrypted_text, rsa, RSA_PKCS1_PADDING);
+    if (result == -1)
     {
-        perror("Arquivo de imagem vazio");
-        fclose(img_fp);
-        return;
-    }
-
-    // Abra um novo arquivo para a imagem criptografada
-    FILE *encryptedFile = fopen("fractal_encrypted.bmp", "wb");
-    if (!encryptedFile)
-    {
-        perror("Erro ao criar o arquivo para a imagem criptografada");
+        printf("Erro ao criptografar o texto\n");
         RSA_free(rsa);
-        fclose(img_fp);
-        return;
+        free(encrypted_text);
+        exit(1);
     }
 
-    // Tamanho da chave pública em bytes
-    int keySize = RSA_size(rsa);
-
-    unsigned char *inBuffer = (unsigned char *)malloc(fileSize);
-    unsigned char *outBuffer = (unsigned char *)malloc(keySize + 1);
-
-    int bytesRead;
-    while ((bytesRead = fread(inBuffer, 1, fileSize, img_fp)) > 0)
-    {
-        int encryptedBytes = RSA_public_encrypt(bytesRead, inBuffer, outBuffer, rsa, RSA_PKCS1_PADDING);
-        printf("%d\n\n", encryptedBytes);
-        if (encryptedBytes <= 0)
-        {
-            perror("Erro ao criptografar a imagem");
-            RSA_free(rsa);
-            fclose(img_fp);
-            fclose(encryptedFile);
-            return;
-        }
-
-        fwrite(outBuffer, 1, encryptedBytes, encryptedFile);
-    }
-
-    free(inBuffer);
-    free(outBuffer);
+    // Copia o texto criptografado de volta para o buffer original
+    memcpy((void *)plain_text, encrypted_text, encrypted_text_len);
 
     RSA_free(rsa);
-    fclose(img_fp);
-    fclose(encryptedFile);
-
-    printf("Imagem criptografada com sucesso!\n");
-}
-
-int sendData(int sock, const void *data, size_t size)
-{
-    size_t totalSent = 0;
-    while (totalSent < size)
-    {
-        int bytesSent = send(sock, (const char *)data + totalSent, size - totalSent, 0);
-        if (bytesSent < 0)
-        {
-            perror("Erro ao enviar dados");
-            return -1;
-        }
-        totalSent += bytesSent;
-    }
-    return 0;
-}
-
-void sendEncryptedImageToBob(const char *encryptedImageFile, int sock)
-{
-    FILE *encryptedFile = fopen(encryptedImageFile, "rb");
-    if (!encryptedFile)
-    {
-        perror("Erro ao abrir a imagem criptografada");
-        return;
-    }
-
-    // Obtenha o tamanho da imagem criptografada
-    fseek(encryptedFile, 0, SEEK_END);
-    long encryptedFileSize = ftell(encryptedFile);
-    fseek(encryptedFile, 0, SEEK_SET);
-
-    // Envie o tamanho da imagem para Bob
-    if (sendData(sock, &encryptedFileSize, sizeof(encryptedFileSize)) < 0)
-    {
-        fclose(encryptedFile);
-        return;
-    }
-
-    // Envie a imagem criptografada para Bob
-    unsigned char buffer[BUFFER_SIZE];
-    size_t bytesRead;
-    while ((bytesRead = fread(buffer, 1, sizeof(buffer), encryptedFile)) > 0)
-    {
-        if (sendData(sock, buffer, bytesRead) < 0)
-        {
-            fclose(encryptedFile);
-            return;
-        }
-    }
-
-    fclose(encryptedFile);
-
-    printf("Imagem criptografada enviada para Bob com sucesso!\n");
+    free(encrypted_text);
 }
 
 int main()
 {
-    int sock = 0, valread;
-    struct sockaddr_in serv_addr;
-    char buffer[BUFFER_SIZE] = {0};
+    OpenSSL_add_all_algorithms();
+    // Configurações do socket
+    int sockfd;
+    struct sockaddr_in server_addr;
 
-    printf("Digite uma mensagem para enviar (ou --send-encrypted-fractal para criptografar e enviar a imagem)\n\n");
-
-    // Criação do socket
-    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+    // Leitura do fractal a partir do arquivo BMP
+    FILE *fp_fractal = fopen("fractaljulia.bmp", "rb");
+    if (!fp_fractal)
     {
-        printf("\nErro ao criar o socket\n");
-        return -1;
+        perror("Erro ao abrir o arquivo fractaljulia.bmp");
+        exit(1);
     }
 
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(PORT);
+    fseek(fp_fractal, 0, SEEK_END);
+    int bmpSize = ftell(fp_fractal);
+    fseek(fp_fractal, 0, SEEK_SET);
 
-    // Converte o endereço IP de texto para binário
-    if (inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr) <= 0)
+    printf("len do arquivo: %d\n", bmpSize);
+
+    unsigned char *buffer = (unsigned char *)malloc(bmpSize);
+    fread(buffer, 1, bmpSize, fp_fractal);
+    fclose(fp_fractal);
+
+    // Copy the first 54 bytes to the 'header' variable
+    unsigned char *header = (unsigned char *)malloc(54);
+
+    int imagesize;
+
+    memcpy(&imagesize, buffer + 34, sizeof(int));
+
+    memcpy(header, buffer, 54);
+
+    // Calculate the size of the 'body' variable
+    int body_len = bmpSize - 54;
+
+    int encrypted_len = ((body_len + 7) / 8) * 8; // Round up to the nearest multiple of 8 bytes
+    unsigned char *encrypted_fractal = (unsigned char *)malloc(encrypted_len);
+    encryptImageWithRSA(buffer + 54, body_len, "../chave.pub");
+
+    printf("len %d", encrypted_len);
+
+    // Combina o cabeçalho com o corpo criptografado
+    unsigned char *full_fractal = (unsigned char *)malloc(54 + encrypted_len);
+    memcpy(full_fractal, header, 54);
+    memcpy(full_fractal + 54, encrypted_fractal, encrypted_len);
+
+    // Criação do socket TCP
+    sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0)
     {
-        printf("\nEndereço inválido/sem suporte\n");
-        return -1;
+        perror("Erro ao criar o socket");
+        exit(1);
     }
 
-    // Conecta-se ao servidor (Bob)
-    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(8080);                   // Porta do servidor Bob (ajuste conforme necessário)
+    server_addr.sin_addr.s_addr = inet_addr("127.0.0.1"); // IP do servidor Bob (ajuste conforme necessário)
+
+    // Conexão ao servidor
+    if (connect(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
     {
-        printf("\nConexão Falhou\n");
-        return -1;
+        perror("Erro ao conectar ao servidor");
+        exit(1);
     }
 
-    while (1)
+    if (send(sockfd, &encrypted_len, sizeof(encrypted_len), 0) < 0)
     {
-        // Recebe o comando do usuário
-        printf("Alice: ");
-        fgets(buffer, BUFFER_SIZE, stdin);
-
-        if (strcmp(buffer, "--send-encrypted-fractal\n") == 0)
-        {
-            // Criptografa e envia a imagem
-            encryptImageWithRSA("../chave.pub");
-
-            // Depois de criptografar a imagem, envia-a para Bob usando a conexão TCP existente.
-            sendEncryptedImageToBob("fractal_encrypted.bmp", sock);
-        }
-        else
-        {
-            // Envia a mensagem normalmente
-            send(sock, buffer, strlen(buffer), 0);
-        }
+        perror("Erro ao enviar encrypted_len para o servidor");
+        exit(1);
     }
 
-    close(sock);
+    printf("len do encrypted_len%d\n", encrypted_len);
+
+    if (send(sockfd, full_fractal, encrypted_len + 54, 0) < 0)
+    {
+        perror("Erro ao enviar fractal criptografado para o servidor");
+        exit(1);
+    }
+
+    FILE *fp_fractal_decrypted = fopen("alo.bmp", "wb");
+    if (!fp_fractal_decrypted)
+    {
+        perror("Erro ao criar arquivo fractalplain.bmp");
+        exit(1);
+    }
+
+    fwrite(full_fractal, sizeof(unsigned char), encrypted_len + 54, fp_fractal_decrypted);
+    fclose(fp_fractal_decrypted);
+
+    close(sockfd);
+    free(encrypted_fractal);
+    free(full_fractal);
+
+    free(header);
+    // free(body);
+    free(buffer);
 
     return 0;
 }
