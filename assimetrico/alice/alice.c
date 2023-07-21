@@ -8,67 +8,34 @@
 #include <openssl/err.h>
 #include <openssl/bn.h>
 
-// Função auxiliar para carregar uma chave pública RSA a partir de uma string no formato "n#e"
-RSA *createRSA(const char *n_str, const char *e_str)
+// Função auxiliar para carregar uma chave pública RSA a partir de uma string PEM
+RSA *read_RSA_pubkey_from_file(const char *filename)
 {
-    printf("n: %s\n", n_str);
-    printf("e: %s\n", e_str);
+    RSA *rsa_key = NULL;
+    FILE *rsa_pub_key_file = fopen(filename, "r");
 
-    RSA *rsa = RSA_new();
-    if (!rsa)
+    if (!rsa_pub_key_file)
     {
-        printf("Erro ao criar estrutura RSA\n");
+        perror("Erro ao abrir o arquivo PEM");
         return NULL;
     }
 
-    BIGNUM *n = BN_new();
-    BIGNUM *e = BN_new();
+    rsa_key = PEM_read_RSA_PUBKEY(rsa_pub_key_file, NULL, NULL, NULL);
+    fclose(rsa_pub_key_file);
 
-    if (!BN_hex2bn(&n, n_str))
+    if (!rsa_key)
     {
-        printf("Erro ao converter 'n' para BIGNUM\n");
-        RSA_free(rsa);
+        ERR_print_errors_fp(stderr);
         return NULL;
     }
 
-    if (!BN_hex2bn(&e, e_str))
-    {
-        printf("Erro ao converter 'e' para BIGNUM\n");
-        BN_free(n);
-        RSA_free(rsa);
-        return NULL;
-    }
-
-    if (!RSA_set0_key(rsa, n, e, NULL))
-    {
-        printf("Erro ao configurar os componentes da chave pública RSA\n");
-        BN_free(n);
-        BN_free(e);
-        RSA_free(rsa);
-        return NULL;
-    }
-
-    return rsa;
+    return rsa_key;
 }
 
 // Função para criptografar a imagem com RSA usando a chave pública de Bob
 void encryptImageWithRSA(const unsigned char *plain_text, int plain_text_len, const char *publicKeyFile)
 {
-    // Carrega a chave pública RSA de Bob a partir do arquivo "chave.pub"
-    FILE *fp = fopen(publicKeyFile, "r");
-    if (!fp)
-    {
-        perror("Erro ao abrir o arquivo da chave pública");
-        exit(1);
-    }
-
-    char n_str[256];
-    char e_str[256];
-
-    fscanf(fp, "%[^#]#%s", n_str, e_str);
-    fclose(fp);
-
-    RSA *rsa = createRSA(n_str, e_str);
+    RSA *rsa = read_RSA_pubkey_from_file(publicKeyFile);
     if (!rsa)
     {
         printf("Erro ao criar a chave pública RSA\n");
@@ -84,8 +51,8 @@ void encryptImageWithRSA(const unsigned char *plain_text, int plain_text_len, co
     printf("num_blocks: %d\n", num_blocks);
 
     // Tamanho total do texto criptografado (em bytes)
-    int encrypted_text_len = rsa_block_size;
-    printf("encrypted_text_len: %d\n", num_blocks);
+    int encrypted_text_len = rsa_block_size * num_blocks;
+    printf("encrypted_text_len: %d\n", encrypted_text_len);
 
     // Aloca memória para armazenar o texto criptografado
     unsigned char *encrypted_text = (unsigned char *)malloc(encrypted_text_len);
