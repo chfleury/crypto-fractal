@@ -4,6 +4,8 @@
 #include <openssl/des.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <openssl/des.h>
+#include <openssl/rand.h>
 
 // Função para realizar a descriptografia DES
 void decrypt(const unsigned char *cipher_text, int cipher_text_len, const unsigned char *key, unsigned char *iv, unsigned char *plain_text)
@@ -18,13 +20,13 @@ void decrypt(const unsigned char *cipher_text, int cipher_text_len, const unsign
 
 int main()
 {
+    OpenSSL_add_all_algorithms();
     // Configurações do socket
     int sockfd, newsockfd;
     struct sockaddr_in server_addr, client_addr;
     socklen_t client_addr_len;
-    char buffer[1078 + 1024]; // Tamanho máximo do cabeçalho (1078 bytes) + tamanho máximo do corpo criptografado (1024 bytes)
 
-    // Chave simétrica para a descriptografia DES (8 bytes)
+    // Chave simétrica e IV para a descriptografia DES (8 bytes cada)
     unsigned char key[8];
     unsigned char iv[8];
 
@@ -41,19 +43,19 @@ int main()
     server_addr.sin_port = htons(8080); // Porta do servidor Bob (ajuste conforme necessário)
     server_addr.sin_addr.s_addr = INADDR_ANY;
 
-    // Vinculação do socket à porta
     if (bind(sockfd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
     {
-        perror("Erro ao vincular o socket à porta");
+        perror("Erro ao fazer bind");
         exit(1);
     }
 
-    // Habilita o socket a aguardar conexões
-    listen(sockfd, 5);
+    if (listen(sockfd, 1) < 0)
+    {
+        perror("Erro ao ouvir");
+        exit(1);
+    }
 
-    printf("Aguardando conexão...\n");
-
-    // Aceita uma conexão entrante
+    printf("Aguardando conexão de Alice...\n");
     client_addr_len = sizeof(client_addr);
     newsockfd = accept(sockfd, (struct sockaddr *)&client_addr, &client_addr_len);
     if (newsockfd < 0)
@@ -62,90 +64,110 @@ int main()
         exit(1);
     }
 
-    printf("Conexão estabelecida com sucesso!\n");
+    printf("Conexão estabelecida com Alice.\n");
 
-    // Recebe a chave simétrica e o IV de Alice
-    if (recv(newsockfd, key, sizeof(key), 0) < 0)
+    // Recebe a chave simétrica enviada por Alice
+    int key_size = 8;
+    if (recv(newsockfd, key, key_size, 0) < 0)
     {
-        perror("Erro ao receber chave simétrica de Alice");
+        perror("Erro ao receber a chave simétrica de Alice");
+        close(newsockfd); // Fecha o novo socket criado para a conexão com Alice
+        close(sockfd);
         exit(1);
     }
 
-    if (recv(newsockfd, iv, sizeof(iv), 0) < 0)
+    // Recebe o IV enviado por Alice
+    int iv_size = 8;
+    if (recv(newsockfd, iv, iv_size, 0) < 0)
     {
-        perror("Erro ao receber IV de Alice");
+        perror("Erro ao receber o IV de Alice");
+        close(newsockfd); // Fecha o novo socket criado para a conexão com Alice
+        close(sockfd);
         exit(1);
     }
 
-    // Recebe o cabeçalho e o corpo criptografado do fractal de Alice
-    int header_len = 54;
-    int total_bytes_received = 0;
-    int bytes_received;
-    while (total_bytes_received < header_len)
+    int encrypted_body_len;
+
+    if (recv(newsockfd, &encrypted_body_len, sizeof(int), 0) < 0)
     {
-        bytes_received = recv(newsockfd, buffer + total_bytes_received, header_len - total_bytes_received, 0);
-        if (bytes_received < 0)
-        {
-            perror("Erro ao receber cabeçalho de Alice");
-            exit(1);
-        }
-        total_bytes_received += bytes_received;
+        perror("Erro ao receber o encrypted_body_len de Alice");
+        close(newsockfd); // Fecha o novo socket criado para a conexão com Alice
+        close(sockfd);
+        exit(1);
     }
 
-    int encrypted_len = 1024;
-    total_bytes_received = 0;
-    while (total_bytes_received < encrypted_len)
+    printf("len do encrypted_body_len%d\n", encrypted_body_len);
+
+    // Tamanho total do cabeçalho e corpo criptografado
+
+    // Recebe o cabeçalho e o corpo criptografado do fractal em uma única mensagem
+    unsigned char *received_data = (unsigned char *)malloc(encrypted_body_len + 54);
+    // int bytes_received = recv(newsockfd, received_data, encrypted_body_len + 54, 0);
+
+    int total_received = 0;
+    int remaining = encrypted_body_len + 54;
+
+    while (remaining > 0)
     {
-        bytes_received = recv(newsockfd, buffer + header_len + total_bytes_received, encrypted_len - total_bytes_received, 0);
-        if (bytes_received < 0)
+        int bytes_received = recv(newsockfd, received_data + total_received, remaining, 0);
+        if (bytes_received <= 0)
         {
-            perror("Erro ao receber corpo criptografado de Alice");
+            perror("Erro ao receber o fractal criptografado de Alice");
+            free(received_data);
+            close(newsockfd);
+            close(sockfd);
             exit(1);
         }
-        total_bytes_received += bytes_received;
+
+        total_received += bytes_received;
+        remaining -= bytes_received;
     }
 
-    printf("Fractal criptografado recebido com sucesso!\n");
+    printf("len do bytes_received%d\n", total_received);
 
+    if (total_received < 0)
+    {
+        perror("Erro ao receber o fractal criptografado de Alice");
+        free(received_data);
+        close(newsockfd);
+        close(sockfd);
+        exit(1);
+    }
+
+    FILE *fp_fractal_riptografado = fopen("fractalcriptograma.bmp", "wb");
+    fwrite(received_data, sizeof(unsigned char), total_received, fp_fractal_riptografado);
+    fclose(fp_fractal_riptografado);
+
+    printf("Imagem salva: fractalcriptograma.bmp\n");
+
+    // Separa o cabeçalho do corpo criptografado
+    unsigned char *header = (unsigned char *)malloc(54);
+    unsigned char *encrypted_fractal = (unsigned char *)malloc(encrypted_body_len);
+
+    memcpy(header, received_data, 54);
+    memcpy(encrypted_fractal, received_data + 54, encrypted_body_len);
+    printf("len %d", encrypted_body_len);
+
+    printf("imagezie %d!\n");
     // Realiza a descriptografia somente do corpo do fractal
-    unsigned char *decrypted_fractal = (unsigned char *)malloc(encrypted_len);
-    decrypt(buffer + header_len, encrypted_len, key, iv, decrypted_fractal);
+    unsigned char *decrypted_fractal = (unsigned char *)malloc(encrypted_body_len);
+    decrypt(encrypted_fractal, encrypted_body_len, key, iv, decrypted_fractal);
 
-    // Criação do arquivo BMP com o fractal criptografado
-    FILE *fp_fractal_encrypted = fopen("fractalcriptografado.bmp", "wb");
-    if (!fp_fractal_encrypted)
-    {
-        perror("Erro ao criar arquivo fractalcriptografado.bmp");
-        exit(1);
-    }
-    fwrite(buffer, sizeof(unsigned char), header_len, fp_fractal_encrypted);
-    fwrite(decrypted_fractal, sizeof(unsigned char), encrypted_len, fp_fractal_encrypted);
-    fclose(fp_fractal_encrypted);
+    // Criação do arquivo fractalplain.bmp com o conteúdo descriptografado
+    FILE *fp_fractal_descriptografado = fopen("fractalplain.bmp", "wb");
+    fwrite(header, sizeof(unsigned char), 54, fp_fractal_descriptografado);
+    fwrite(decrypted_fractal, sizeof(unsigned char), encrypted_body_len, fp_fractal_descriptografado);
+    fclose(fp_fractal_descriptografado);
 
-    // Recompõe o cabeçalho do BMP para o fractal descriptografado
-    unsigned int width = *(unsigned int *)(buffer + 18);
-    unsigned int height = *(unsigned int *)(buffer + 22);
-    unsigned int image_size = width * height * 3; // O BMP está em RGB de 24 bits (3 bytes por pixel)
-    unsigned int file_size = image_size + header_len;
-
-    *(unsigned int *)(buffer + 2) = file_size;
-    *(unsigned int *)(buffer + 34) = image_size;
-
-    // Criação do arquivo BMP com o fractal descriptografado
-    FILE *fp_fractal_decrypted = fopen("fractalplain.bmp", "wb");
-    if (!fp_fractal_decrypted)
-    {
-        perror("Erro ao criar arquivo fractalplain.bmp");
-        exit(1);
-    }
-    fwrite(buffer, sizeof(unsigned char), header_len, fp_fractal_decrypted);
-    fwrite(decrypted_fractal, sizeof(unsigned char), encrypted_len, fp_fractal_decrypted);
-    fclose(fp_fractal_decrypted);
+    printf("Imagem salva: fractalplain.bmp\n");
 
     // Fechamento do socket e liberação da memória alocada
     close(newsockfd);
     close(sockfd);
+    free(header);
+    free(encrypted_fractal);
     free(decrypted_fractal);
+    free(received_data);
 
     return 0;
 }
